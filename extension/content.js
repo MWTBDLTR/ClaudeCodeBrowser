@@ -211,6 +211,165 @@
     // console not writable in this sandbox — skip console logging
   }
 
+  function pushNetworkLog(entry) {
+    networkLogs.push(entry);
+    if (networkLogs.length > MAX_LOG_ENTRIES) {
+      networkLogs.shift();
+    }
+  }
+
+  function readBody(response, entry) {
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('json') && !contentType.includes('text/')) {
+      entry.responseBody = '[Binary data]';
+      return Promise.resolve();
+    }
+    return response.clone().text().then(
+      text => { entry.responseBody = String(text).substring(0, 5000); },
+      () => { entry.responseBody = '[Could not read response]'; }
+    );
+  }
+
+  // Firefox: the hooks above only patch this content script's Xray view, so the
+  // page's own fetch/XHR/console calls never reach them. Patch the page's
+  // objects with exportFunction, which page CSP can't block.
+  function interceptPageWorld() {
+    const pageWin = window.wrappedJSObject;
+    if (typeof exportFunction !== 'function' || !pageWin) return;
+
+    // Call page functions in the page's realm: through Xrays, results (promises,
+    // responses) and argument arrays would belong to this sandbox, and the page
+    // can't touch them.
+    const callPage = (fn, self, args) => pageWin.Reflect.apply(fn, self, pageWin.Array.of(...args));
+    const logHookError = (where, e) => {
+      consoleLogs.push({ level: 'error', timestamp: new Date().toISOString(), message: `[ClaudeCodeBrowser hook ${where}] ${e?.message ?? e}`, url: window.location.href });
+    };
+
+    try {
+      const pageFetch = pageWin.fetch;
+      exportFunction(function(...args) {
+        const promise = callPage(pageFetch, pageWin, args);
+        if (!loggingEnabled) return promise;
+        const [resource, init] = args;
+        const startTime = Date.now();
+        let entry;
+        try {
+          entry = {
+            type: 'fetch',
+            method: String(init?.method || resource?.method || 'GET').toUpperCase(),
+            url: typeof resource === 'string' ? resource : String(resource?.url ?? resource),
+            requestBody: init?.body != null ? String(init.body).substring(0, 1000) : null,
+            startTime: new Date(startTime).toISOString(),
+            pageUrl: window.location.href
+          };
+        } catch (e) {
+          logHookError('fetch', e);
+          return promise;
+        }
+        Promise.resolve(XPCNativeWrapper(promise)).catch(error => {
+          entry.error = String(error?.message ?? error);
+          entry.duration = Date.now() - startTime;
+          pushNetworkLog(entry);
+        });
+        // Clone in a page-realm then, before the page's own handlers can read the body.
+        return promise.then(exportFunction(response => {
+          try {
+            entry.status = response.status;
+            entry.statusText = response.statusText;
+            entry.duration = Date.now() - startTime;
+            readBody(response, entry).then(() => pushNetworkLog(entry));
+          } catch (e) {
+            logHookError('fetch', e);
+          }
+          return response;
+        }, pageWin));
+      }, pageWin, { defineAs: 'fetch' });
+      interception.fetch = true;
+    } catch (e) {
+      // leave fetch unhooked
+    }
+
+    try {
+      const proto = pageWin.XMLHttpRequest.prototype;
+      const pageOpen = proto.open;
+      const pageSend = proto.send;
+      const xhrData = new WeakMap();
+      exportFunction(function(...args) {
+        try {
+          xhrData.set(this, { type: 'xhr', method: String(args[0]).toUpperCase(), url: String(args[1]), pageUrl: window.location.href });
+        } catch (e) {
+          logHookError('xhr.open', e);
+        }
+        return callPage(pageOpen, this, args);
+      }, proto, { defineAs: 'open' });
+      exportFunction(function(body) {
+        const entry = xhrData.get(this);
+        if (loggingEnabled && entry) {
+          try {
+            const startTime = Date.now();
+            entry.startTime = new Date(startTime).toISOString();
+            entry.requestBody = body != null ? String(body).substring(0, 1000) : null;
+            this.addEventListener('loadend', () => {
+              entry.status = this.status;
+              entry.statusText = this.statusText;
+              entry.duration = Date.now() - startTime;
+              if (this.status === 0) entry.error = 'Network error';
+              try {
+                const type = this.responseType;
+                entry.responseBody = type === '' || type === 'text' ? String(this.responseText).substring(0, 5000) : `[${type}]`;
+              } catch (e) {
+                entry.responseBody = '[Could not read response]';
+              }
+              pushNetworkLog({ ...entry });
+            });
+          } catch (e) {
+            logHookError('xhr.send', e);
+          }
+        }
+        return callPage(pageSend, this, [body]);
+      }, proto, { defineAs: 'send' });
+      interception.xhr = true;
+    } catch (e) {
+      // leave XHR unhooked
+    }
+
+    try {
+      const pageConsole = pageWin.console;
+      ['log', 'warn', 'error', 'info', 'debug'].forEach(method => {
+        const original = pageConsole[method];
+        exportFunction(function(...args) {
+          if (loggingEnabled) {
+            consoleLogs.push({
+              level: method,
+              timestamp: new Date().toISOString(),
+              message: args.map(arg => {
+                try {
+                  return typeof arg === 'object' && arg !== null ? JSON.stringify(arg, null, 2) : String(arg);
+                } catch (e) {
+                  try {
+                    return String(arg);
+                  } catch (e2) {
+                    return `[${typeof arg}]`;
+                  }
+                }
+              }).join(' '),
+              url: window.location.href
+            });
+            if (consoleLogs.length > MAX_LOG_ENTRIES) {
+              consoleLogs.shift();
+            }
+          }
+          return callPage(original, pageConsole, args);
+        }, pageConsole, { defineAs: method });
+      });
+      interception.console = true;
+    } catch (e) {
+      // leave page console unhooked
+    }
+  }
+
+  interceptPageWorld();
+
   // Logging control functions
   function startLogging(options = {}) {
     loggingEnabled = true;
