@@ -279,7 +279,14 @@ async function handleCommand(message) {
       case "clickAndWait":
       case "pressKey":
       case "getText":
+      case "injectObserver":
         result = await sendToContentScript(tabId, { action, ...data });
+        break;
+      case "evalChain":
+        result = await evalChain(tabId, data);
+        break;
+      case "waitAndAct":
+        result = await waitAndAct(tabId, data);
         break;
       // Console and network logging commands
       case "startLogging":
@@ -342,13 +349,43 @@ async function takeScreenshot(tabId, options = {}) {
         quality: options.quality || 90
       });
 
-      // If full page screenshot requested, use content script
+      // Full page: the content script reports the document size, then
+      // Firefox's captureTab can grab a rect larger than the viewport.
+      // (Previously the size object itself was returned as `data`, which the
+      // server then failed to save as an image.)
       if (options.fullPage) {
-        const fullPageData = await browser.tabs.sendMessage(targetTab.id, {
+        const dims = await browser.tabs.sendMessage(targetTab.id, {
           action: "captureFullPage",
           format: options.format || "png"
         });
-        return { success: true, data: fullPageData, type: "fullPage" };
+        const size = (dims && dims.data) || dims || {};
+        if (typeof browser.tabs.captureTab === "function" && size.scrollHeight) {
+          // Stay under Firefox's canvas limits on very long pages.
+          const MAX_DIM = 16384;
+          const width = Math.min(size.scrollWidth || size.viewportWidth, MAX_DIM);
+          const height = Math.min(size.scrollHeight, MAX_DIM);
+          const scale = Math.min(1, 32000000 / (width * height));
+          const fullUrl = await browser.tabs.captureTab(targetTab.id, {
+            format: options.format || "png",
+            quality: options.quality || 90,
+            rect: { x: 0, y: 0, width, height },
+            scale
+          });
+          return {
+            success: true,
+            data: fullUrl,
+            type: "fullPage",
+            size: { width, height, scale, truncated: size.scrollHeight > MAX_DIM },
+            tab: { id: targetTab.id, url: targetTab.url, title: targetTab.title }
+          };
+        }
+        return {
+          success: true,
+          data: dataUrl,
+          type: "visible",
+          note: "Full-page capture unavailable in this browser; returned the visible area.",
+          tab: { id: targetTab.id, url: targetTab.url, title: targetTab.title }
+        };
       }
 
       return {
@@ -548,16 +585,22 @@ async function performScroll(tabId, data) {
 // Navigation
 async function navigateTo(tabId, data) {
   try {
-    const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
-
-    await browser.tabs.update(tab.id, { url: data.url });
+    const wantNewTab = !tabId && (data.newTab || data.new_tab);
+    let tab;
+    if (wantNewTab) {
+      // Never reuse the user's current tab when a new one was requested.
+      tab = await browser.tabs.create({ url: data.url, active: true });
+    } else {
+      tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
+      await browser.tabs.update(tab.id, { url: data.url });
+    }
 
     // Wait for page to load
     return new Promise((resolve) => {
       const listener = (updatedTabId, changeInfo) => {
         if (updatedTabId === tab.id && changeInfo.status === "complete") {
           browser.tabs.onUpdated.removeListener(listener);
-          resolve({ success: true, url: data.url });
+          resolve({ success: true, url: data.url, tabId: tab.id, newTab: !!wantNewTab });
         }
       };
       browser.tabs.onUpdated.addListener(listener);
@@ -565,7 +608,7 @@ async function navigateTo(tabId, data) {
       // Timeout after 30 seconds
       setTimeout(() => {
         browser.tabs.onUpdated.removeListener(listener);
-        resolve({ success: true, url: data.url, note: "Navigation initiated but completion not confirmed" });
+        resolve({ success: true, url: data.url, tabId: tab.id, newTab: !!wantNewTab, note: "Navigation initiated but completion not confirmed" });
       }, 30000);
     });
   } catch (error) {
@@ -618,6 +661,91 @@ async function executeScript(tabId, data) {
     });
 
     return { success: true, result: result[0] };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+// Evaluate one script (expression or statements) in the tab with `$prev`
+// bound, awaiting promises and optionally capturing console output.
+// Runs in the content-script context, same as browser_execute_script.
+async function evalInTab(tabId, script, prev, captureConsole) {
+  // The global console can't be reliably reassigned in Firefox's content-script
+  // sandbox, so shadow it with a local `console` that the direct eval below
+  // resolves lexically. Nothing global is mutated.
+  const code = `(async function ($prev, __realConsole) {
+    const __logs = [];
+    const __fmt = (a) => a.map(x => { try { return typeof x === 'object' && x !== null ? JSON.stringify(x) : String(x); } catch (e) { return String(x); } }).join(' ');
+    const console = ${captureConsole ? 'true' : 'false'}
+      ? Object.fromEntries(['log', 'info', 'warn', 'error', 'debug'].map(m => [m, (...a) => {
+          __logs.push({ type: m, text: __fmt(a) });
+          __realConsole[m](...a);
+        }]))
+      : __realConsole;
+    const __safe = (v) => { try { return v === undefined ? null : JSON.parse(JSON.stringify(v)); } catch (e) { return String(v); } };
+    try {
+      let v = eval(${JSON.stringify(script)});
+      if (v && typeof v.then === 'function') v = await v;
+      return { ok: true, value: __safe(v), console: __logs };
+    } catch (e) {
+      return { ok: false, error: String(e && e.message || e), console: __logs };
+    }
+  })(${JSON.stringify(prev === undefined ? null : prev)}, console);`;
+  const [res] = await browser.tabs.executeScript(tabId, { code });
+  return res || { ok: false, error: 'No result from tab', console: [] };
+}
+
+async function resolveTab(tabId) {
+  return tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
+}
+
+// browser_eval_chain: run steps in order, each seeing the previous result as $prev.
+async function evalChain(tabId, data) {
+  try {
+    const tab = await resolveTab(tabId);
+    const steps = data.steps || [];
+    const results = [];
+    let prev = null;
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i] || {};
+      const label = step.label || `step_${i}`;
+      const capture = step.capture_console !== false && step.captureConsole !== false;
+      const stopOnError = step.stop_on_error !== false && step.stopOnError !== false;
+      const r = await evalInTab(tab.id, step.script || '', prev, capture);
+      if (r.ok) {
+        prev = r.value;
+        results.push({ label, result: r.value, console: r.console, error: null });
+      } else {
+        results.push({ label, result: null, console: r.console, error: r.error });
+        if (stopOnError) break;
+      }
+    }
+    return { success: results.every(r => r.error === null), steps: results, final: prev };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+// browser_wait_and_act: poll a condition, then run the action once it is truthy.
+async function waitAndAct(tabId, data) {
+  try {
+    const tab = await resolveTab(tabId);
+    const poll = Math.max(50, data.pollIntervalMs || 200);
+    const timeout = data.timeoutMs || 15000;
+    const start = Date.now();
+    let lastError = null;
+    while (Date.now() - start < timeout) {
+      const cond = await evalInTab(tab.id, data.condition || 'true', null, false);
+      if (cond.ok && cond.value) {
+        const act = await evalInTab(tab.id, data.actionScript || '', null, true);
+        return act.ok
+          ? { success: true, result: act.value, console: act.console, elapsedMs: Date.now() - start }
+          : { success: false, error: act.error, console: act.console, elapsedMs: Date.now() - start };
+      }
+      if (!cond.ok) lastError = cond.error;
+      await new Promise(r => setTimeout(r, poll));
+    }
+    return { success: false, error: `Condition not met within ${timeout}ms`, lastConditionError: lastError };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -900,7 +1028,7 @@ async function reloadAllTabs(options = {}) {
         }
       }
 
-      await browser.tabs.reload(tab.id, { bypassCache: options.bypassCache || false });
+      await browser.tabs.reload(tab.id, { bypassCache: options.bypassCache !== false });
       results.push({ id: tab.id, url: tab.url, reloaded: true });
     }
 
@@ -908,7 +1036,7 @@ async function reloadAllTabs(options = {}) {
       success: true,
       reloadedCount: results.length,
       tabs: results,
-      bypassCache: options.bypassCache || false
+      bypassCache: options.bypassCache !== false
     };
   } catch (error) {
     return { success: false, error: error.message };

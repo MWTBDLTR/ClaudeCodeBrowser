@@ -267,11 +267,23 @@ def start_mcp_server():
 
     try:
         # Start server as a detached subprocess
+        # stdin must not be inherited: it is Firefox's native-messaging pipe,
+        # and on Windows a child that inherits a synchronous pipe handle with
+        # a pending read (our main thread is blocked reading it) hangs during
+        # startup. That made every health-monitor restart hang forever, with
+        # the server never binding its port.
+        popen_kwargs = {}
+        if os.name == 'nt':
+            popen_kwargs['creationflags'] = (subprocess.CREATE_NEW_PROCESS_GROUP |
+                                             subprocess.CREATE_NO_WINDOW)
+        else:
+            popen_kwargs['start_new_session'] = True  # Detach from parent process
         server_process = subprocess.Popen(
             [sys.executable, str(mcp_server_path)],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True  # Detach from parent process
+            **popen_kwargs
         )
 
         restart_attempts += 1

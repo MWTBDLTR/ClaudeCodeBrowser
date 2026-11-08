@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="ClaudeCodeBrowser full feature test page">
+<title>CCB Feature Test Page</title>
+<style>
+  :root { color-scheme: light dark; --ok:#1a7f37; --bad:#cf222e; --mut:#888; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; display: grid; grid-template-columns: 1fr 320px; }
+  main { padding: 16px 24px; }
+  aside { position: sticky; top: 0; height: 100vh; overflow: auto; border-left: 1px solid #8884; padding: 12px; font-size: 12px; }
+  section { border: 1px solid #8884; border-radius: 8px; padding: 12px 16px; margin: 0 0 16px; }
+  section h2 { margin: 0 0 8px; font-size: 16px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+  .out { font-family: ui-monospace, monospace; font-size: 12px; color: var(--mut); }
+  #checklist li { list-style: none; margin: 2px 0; }
+  #checklist li::before { content: "○ "; color: var(--mut); }
+  #checklist li.pass::before { content: "✔ "; color: var(--ok); }
+  #checklist li.pass { color: var(--ok); }
+  #coord-box { width: 160px; height: 60px; background: #4a90e2; color: #fff; display: grid; place-items: center; cursor: crosshair; }
+  #hover-target { padding: 8px 12px; background: #8882; border-radius: 6px; display: inline-block; }
+  #hover-tip { visibility: hidden; margin-left: 8px; color: var(--ok); }
+  #hover-target:hover + #hover-tip { visibility: visible; }
+  #editable { border: 1px dashed #888; padding: 6px; min-height: 24px; }
+  #inner-scroll { height: 120px; overflow: auto; border: 1px solid #8886; }
+  #inner-scroll div { height: 600px; background: linear-gradient(#8881, #8884); }
+  #tall { height: 1800px; background: linear-gradient(#0000, #4a90e222); position: relative; }
+  #bottom-marker { position: absolute; bottom: 0; padding: 8px; background: #1a7f37; color: #fff; }
+  #modal { position: fixed; inset: 0; background: #0008; display: none; place-items: center; z-index: 10; }
+  #modal.open { display: grid; }
+  #modal > div { background: Canvas; padding: 24px; border-radius: 8px; min-width: 300px; }
+  .hidden { display: none; }
+  .mock-captcha { border: 1px solid #888; border-radius: 4px; padding: 12px; width: 280px; display: flex; gap: 10px; align-items: center; }
+</style>
+</head>
+<body>
+<main>
+<h1>ClaudeCodeBrowser — Feature Test Page</h1>
+<p class="out">Every interaction is recorded in <code>window.__ccb.events</code> and ticks the checklist on the right.
+Server endpoints: <code>/api/echo</code>, <code>/api/slow?ms=N</code>, <code>/api/status/&lt;code&gt;</code>.</p>
+
+<!-- 1. Clicking -->
+<section id="sec-click">
+  <h2>1. Clicking</h2>
+  <div class="row">
+    <button id="btn-click">Click me</button>
+    <button id="btn-dbl">Double-click me</button>
+    <button id="btn-right">Right-click me</button>
+    <button class="by-text">Find me by text</button>
+    <button id="btn-xpath" data-xp="1">XPath target</button>
+  </div>
+  <div class="row"><div id="coord-box">Coordinate click</div></div>
+  <div id="click-out" class="out">—</div>
+</section>
+
+<!-- 2. Typing -->
+<section id="sec-type">
+  <h2>2. Typing</h2>
+  <div class="row"><label for="in-id">By id</label> <input id="in-id"></div>
+  <div class="row"><label>By name <input name="in_name"></label></div>
+  <div class="row"><label>By placeholder <input placeholder="Type by placeholder"></label></div>
+  <div class="row"><label>Clear first <input id="in-clear" value="OLD VALUE"></label></div>
+  <div class="row"><label>Enter to submit <input id="in-enter"></label> <span id="enter-out" class="out">—</span></div>
+  <div class="row"><label for="ta">Textarea</label> <textarea id="ta" rows="2" cols="40"></textarea></div>
+  <div class="row">contenteditable: <div id="editable" contenteditable="true"></div></div>
+  <div class="row"><label>Password (guard should refuse) <input id="pw" type="password" autocomplete="off"></label></div>
+  <div id="type-out" class="out">—</div>
+</section>
+
+<!-- 3. Form values -->
+<section id="sec-values">
+  <h2>3. Form values (get/set/select)</h2>
+  <form id="form-main" onsubmit="event.preventDefault(); __ccb.pass('form-submit', new FormData(this).get('fruit'));">
+    <div class="row">
+      <label>Fruit <select id="sel" name="fruit">
+        <option value="">--</option><option value="apple">Apple</option>
+        <option value="banana">Banana</option><option value="cherry">Cherry</option>
+      </select></label>
+      <label>Multi <select id="sel-multi" multiple size="3">
+        <option value="r">Red</option><option value="g">Green</option><option value="b">Blue</option>
+      </select></label>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="cb"> Checkbox</label>
+      <label><input type="radio" name="rad" value="a" id="rad-a"> A</label>
+      <label><input type="radio" name="rad" value="b" id="rad-b"> B</label>
+      <label>Range <input type="range" id="range" min="0" max="100" value="10"></label>
+      <label>Date <input type="date" id="date"></label>
+    </div>
+    <div class="row"><label>Preset value <input id="preset" value="read-me-42"></label>
+      <label>Set value <input id="setme"></label>
+      <button type="submit" id="btn-submit">Submit form</button></div>
+  </form>
+  <div id="values-out" class="out">—</div>
+</section>
+
+<!-- 4. Hover & keyboard -->
+<section id="sec-hover">
+  <h2>4. Hover &amp; keyboard</h2>
+  <div class="row"><span id="hover-target">Hover over me</span><span id="hover-tip">tooltip visible</span></div>
+  <div class="row"><label>Key target <input id="key-target" placeholder="press keys here"></label>
+    <span id="key-out" class="out">—</span></div>
+  <div class="row"><button id="btn-modal">Open modal (Escape closes)</button></div>
+</section>
+
+<!-- 5. Dynamic content -->
+<section id="sec-dynamic">
+  <h2>5. Dynamic content</h2>
+  <div class="row">
+    <button id="btn-delayed">Add element after 1.5 s</button>
+    <button id="btn-instant">Add element now</button>
+    <button id="btn-attr">Toggle attribute</button>
+    <button id="btn-reveal">Reveal hidden button after 2 s</button>
+    <button id="btn-hidden" class="hidden">I was hidden</button>
+  </div>
+  <div class="row">Live counter: <span id="counter">0</span>
+    <button id="btn-counter">Start / stop counter</button></div>
+  <div id="dyn-container" data-state="off"></div>
+</section>
+
+<!-- 6. Network & console -->
+<section id="sec-net">
+  <h2>6. Network &amp; console (page-world)</h2>
+  <div class="row">
+    <button id="net-get">fetch GET /api/echo</button>
+    <button id="net-post">fetch POST /api/echo</button>
+    <button id="net-xhr">XHR GET /api/echo</button>
+    <button id="net-404">fetch 404</button>
+    <button id="net-500">fetch 500</button>
+    <button id="net-slow">slow request (1.5 s)</button>
+    <button id="net-burst">burst of 5 requests</button>
+  </div>
+  <div class="row">
+    <button id="con-all">console.log/info/warn/error/debug</button>
+    <button id="con-throw">throw uncaught error</button>
+    <button id="con-reject">unhandled promise rejection</button>
+  </div>
+  <div id="net-out" class="out">—</div>
+</section>
+
+<!-- 7. Scrolling -->
+<section id="sec-scroll">
+  <h2>7. Scrolling</h2>
+  <div id="inner-scroll"><div>Scrollable inner element (600 px tall)</div></div>
+  <div id="scroll-out" class="out">—</div>
+</section>
+
+<!-- 8. Navigation -->
+<section id="sec-nav">
+  <h2>8. Navigation &amp; tabs</h2>
+  <div class="row">
+    <a id="link-page2" href="page2.html">Go to page 2 (back/forward test)</a>
+    <a id="link-hash" href="#sec-nav">Hash link</a>
+    <a id="link-newtab" href="page2.html?from=newtab" target="_blank">Open page 2 in new tab</a>
+  </div>
+  <div class="row">Load count this session: <span id="load-count">?</span></div>
+</section>
+
+<!-- 9. Audit fodder (intentional a11y problems) -->
+<section id="sec-audit">
+  <h2>9. Audit fodder (intentional accessibility issues)</h2>
+  <h4>Skipped heading level (h2 → h4)</h4>
+  <div class="row">
+    <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='20'%3E%3Crect width='40' height='20' fill='%23e66'/%3E%3C/svg%3E" id="img-noalt">
+    <input id="unlabeled-input" placeholder="no label">
+    <a href="#" id="empty-link"></a>
+    <button id="empty-button"></button>
+  </div>
+</section>
+
+<!-- 10. Captcha handoff (mock widget, no real challenge) -->
+<section id="sec-captcha">
+  <h2>10. Captcha handoff (mock Turnstile)</h2>
+  <p class="out">A local stand-in shaped like Cloudflare Turnstile so <code>browser_solve_captcha</code> can detect it.
+  A human clicks the checkbox, which writes a fake response token. Nothing here contacts Cloudflare.</p>
+  <p class="out">Before inserting anything, <code>detect_only</code> must report <b>no</b> captcha: this section's own
+  ids (<code>sec-captcha</code>, <code>btn-captcha</code>) contain the word and used to cause a false positive.</p>
+  <button id="btn-captcha">Insert mock captcha</button>
+  <button id="btn-captcha-img">Insert mock image captcha</button>
+  <div id="captcha-slot"></div>
+</section>
+
+<!-- 11. Tall area for scroll_and_capture / full-page screenshot -->
+<section id="sec-tall">
+  <h2>11. Tall area</h2>
+  <div id="tall"><div id="bottom-marker">Bottom of page reached</div></div>
+</section>
+</main>
+
+<aside>
+  <h3>Checklist</h3>
+  <ul id="checklist"></ul>
+  <h3>Event log</h3>
+  <ol id="event-log" class="out" reversed></ol>
+</aside>
+
+<div id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+  <div><h3 id="modal-title">Modal open</h3><p>Press Escape or click Close.</p>
+  <button id="modal-close">Close</button></div>
+</div>
+
+<script>
+(() => {
+  const CHECKS = [
+    ['click', 'browser_click (selector)'], ['dblclick', 'browser_click double_click'],
+    ['rightclick', 'browser_click right_click'], ['click-text', 'browser_click by text'],
+    ['click-xpath', 'browser_click by XPath'], ['click-coord', 'browser_click by x/y'],
+    ['type-id', 'browser_type by id'], ['type-name', 'browser_type by name'],
+    ['type-placeholder', 'browser_type by placeholder'], ['type-clear', 'browser_type clear'],
+    ['type-enter', 'browser_type press_enter'], ['type-textarea', 'browser_type textarea'],
+    ['type-editable', 'browser_type contenteditable'], ['password-blocked', 'password guard (should stay empty)'],
+    ['select', 'browser_select_option'], ['select-multi', 'select multiple'],
+    ['checkbox', 'checkbox'], ['radio', 'radio'], ['range', 'range'], ['date', 'date'],
+    ['set-value', 'browser_set_value'], ['form-submit', 'form submit'],
+    ['hover', 'browser_hover'], ['key', 'browser_press_key'], ['key-mod', 'press_key with modifier'],
+    ['modal-open', 'click_and_wait (modal)'], ['modal-escape', 'Escape closes modal'],
+    ['dyn-delayed', 'wait_for_element (delayed)'], ['dyn-instant', 'wait_for_change'],
+    ['dyn-attr', 'attribute change'], ['hidden-click', 'wait_and_act (revealed button)'],
+    ['counter', 'observe_element (counter)'],
+    ['net-get', 'fetch GET'], ['net-post', 'fetch POST'], ['net-xhr', 'XHR'],
+    ['net-404', 'fetch 404'], ['net-500', 'fetch 500'], ['net-slow', 'slow / network idle'],
+    ['net-burst', 'burst'], ['console', 'console levels'], ['throw', 'uncaught error'],
+    ['reject', 'unhandled rejection'], ['inner-scroll', 'scroll inner element'],
+    ['page-scroll', 'page scroll'], ['bottom', 'scrolled to bottom'],
+    ['hash', 'hash link'], ['captcha-inserted', 'captcha widget inserted'],
+    ['captcha-solved', 'captcha solved by human'], ['captcha-img', 'generic image captcha inserted'],
+  ];
+  const list = document.getElementById('checklist');
+  for (const [id, label] of CHECKS) {
+    const li = document.createElement('li'); li.id = 'chk-' + id; li.textContent = label; list.appendChild(li);
+  }
+  const log = document.getElementById('event-log');
+  window.__ccb = {
+    events: [],
+    pass(id, detail) {
+      const ev = { id, detail: detail === undefined ? null : String(detail), t: Date.now() };
+      this.events.push(ev);
+      document.getElementById('chk-' + id)?.classList.add('pass');
+      const li = document.createElement('li'); li.textContent = id + (ev.detail ? ': ' + ev.detail : '');
+      log.prepend(li);
+    },
+    passed() { return [...new Set(this.events.map(e => e.id))]; },
+    missing() { const p = new Set(this.passed()); return CHECKS.map(c => c[0]).filter(id => !p.has(id)); },
+  };
+  const $ = (s) => document.querySelector(s);
+  const on = (s, ev, fn) => $(s).addEventListener(ev, fn);
+  const out = (s, t) => { $(s).textContent = t; };
+
+  // Load counter (refresh / hard refresh / reload_by_url)
+  const n = Number(sessionStorage.getItem('ccb-loads') || 0) + 1;
+  sessionStorage.setItem('ccb-loads', n); out('#load-count', n);
+
+  // 1. Clicks
+  on('#btn-click', 'click', () => { __ccb.pass('click'); out('#click-out', 'clicked'); });
+  on('#btn-dbl', 'dblclick', () => { __ccb.pass('dblclick'); out('#click-out', 'double-clicked'); });
+  on('#btn-right', 'contextmenu', (e) => { e.preventDefault(); __ccb.pass('rightclick'); out('#click-out', 'right-clicked'); });
+  on('.by-text', 'click', () => { __ccb.pass('click-text'); out('#click-out', 'clicked by text'); });
+  on('#btn-xpath', 'click', () => { __ccb.pass('click-xpath'); out('#click-out', 'clicked by xpath'); });
+  on('#coord-box', 'click', (e) => { __ccb.pass('click-coord', e.clientX + ',' + e.clientY); out('#click-out', 'coord ' + e.clientX + ',' + e.clientY); });
+
+  // 2. Typing
+  const typed = (sel, id) => on(sel, 'input', (e) => { __ccb.pass(id, e.target.value ?? e.target.textContent); });
+  typed('#in-id', 'type-id'); typed('[name=in_name]', 'type-name');
+  typed('[placeholder="Type by placeholder"]', 'type-placeholder'); typed('#ta', 'type-textarea');
+  on('#in-clear', 'input', (e) => { if (!e.target.value.includes('OLD')) __ccb.pass('type-clear', e.target.value); });
+  on('#in-enter', 'keydown', (e) => { if (e.key === 'Enter') { __ccb.pass('type-enter', e.target.value); out('#enter-out', 'submitted: ' + e.target.value); } });
+  on('#editable', 'input', (e) => __ccb.pass('type-editable', e.target.textContent));
+  on('#pw', 'input', () => { out('#type-out', 'WARNING: password field received input'); __ccb.events.push({ id: 'password-TYPED', t: Date.now() }); });
+
+  // 3. Values
+  on('#sel', 'change', (e) => __ccb.pass('select', e.target.value));
+  on('#sel-multi', 'change', (e) => __ccb.pass('select-multi', [...e.target.selectedOptions].map(o => o.value).join(',')));
+  on('#cb', 'change', (e) => __ccb.pass('checkbox', e.target.checked));
+  document.querySelectorAll('[name=rad]').forEach(r => r.addEventListener('change', (e) => __ccb.pass('radio', e.target.value)));
+  on('#range', 'input', (e) => __ccb.pass('range', e.target.value));
+  on('#range', 'change', (e) => __ccb.pass('range', e.target.value));
+  on('#date', 'change', (e) => __ccb.pass('date', e.target.value));
+  on('#date', 'input', (e) => __ccb.pass('date', e.target.value));
+  on('#setme', 'input', (e) => __ccb.pass('set-value', e.target.value));
+  on('#setme', 'change', (e) => __ccb.pass('set-value', e.target.value));
+
+  // 4. Hover & keys
+  on('#hover-target', 'mouseover', () => __ccb.pass('hover'));
+  on('#key-target', 'keydown', (e) => {
+    const mods = ['ctrl', 'shift', 'alt', 'meta'].filter(m => e[m + 'Key']);
+    out('#key-out', [...mods, e.key].join('+'));
+    __ccb.pass('key', e.key);
+    if (mods.length) __ccb.pass('key-mod', [...mods, e.key].join('+'));
+  });
+  on('#btn-modal', 'click', () => { $('#modal').classList.add('open'); __ccb.pass('modal-open'); });
+  on('#modal-close', 'click', () => $('#modal').classList.remove('open'));
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && $('#modal').classList.contains('open')) { $('#modal').classList.remove('open'); __ccb.pass('modal-escape'); }
+  });
+
+  // 5. Dynamic
+  const addEl = (id, cls) => { const d = document.createElement('div'); d.id = id; d.className = cls; d.textContent = 'Added: ' + id; $('#dyn-container').appendChild(d); };
+  on('#btn-delayed', 'click', () => setTimeout(() => { addEl('delayed-el', 'dyn'); __ccb.pass('dyn-delayed'); }, 1500));
+  on('#btn-instant', 'click', () => { addEl('instant-el-' + Date.now(), 'dyn'); __ccb.pass('dyn-instant'); });
+  on('#btn-attr', 'click', () => { const c = $('#dyn-container'); c.dataset.state = c.dataset.state === 'on' ? 'off' : 'on'; __ccb.pass('dyn-attr', c.dataset.state); });
+  on('#btn-reveal', 'click', () => setTimeout(() => $('#btn-hidden').classList.remove('hidden'), 2000));
+  on('#btn-hidden', 'click', () => __ccb.pass('hidden-click'));
+  let timer = null;
+  on('#btn-counter', 'click', () => {
+    if (timer) { clearInterval(timer); timer = null; return; }
+    timer = setInterval(() => { const c = $('#counter'); c.textContent = +c.textContent + 1; if (+c.textContent >= 3) __ccb.pass('counter', c.textContent); }, 400);
+  });
+
+  // 6. Network & console — all in page world
+  const net = async (id, url, opts) => {
+    try { const r = await fetch(url, opts); out('#net-out', id + ' -> ' + r.status); __ccb.pass(id, r.status); }
+    catch (e) { out('#net-out', id + ' failed ' + e); }
+  };
+  on('#net-get', 'click', () => net('net-get', '/api/echo?probe=get'));
+  on('#net-post', 'click', () => net('net-post', '/api/echo?probe=post', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hello: 'ccb' }) }));
+  on('#net-xhr', 'click', () => { const x = new XMLHttpRequest(); x.open('GET', '/api/echo?probe=xhr'); x.onload = () => { out('#net-out', 'xhr -> ' + x.status); __ccb.pass('net-xhr', x.status); }; x.send(); });
+  on('#net-404', 'click', () => net('net-404', '/api/status/404'));
+  on('#net-500', 'click', () => net('net-500', '/api/status/500'));
+  on('#net-slow', 'click', () => net('net-slow', '/api/slow?ms=1500'));
+  on('#net-burst', 'click', async () => { await Promise.all([1, 2, 3, 4, 5].map(i => fetch('/api/echo?burst=' + i))); __ccb.pass('net-burst', 5); });
+  on('#con-all', 'click', () => {
+    console.log('CCB_TEST log'); console.info('CCB_TEST info'); console.warn('CCB_TEST warn');
+    console.error('CCB_TEST error'); console.debug('CCB_TEST debug'); __ccb.pass('console');
+  });
+  on('#con-throw', 'click', () => { __ccb.pass('throw'); setTimeout(() => { throw new Error('CCB_TEST uncaught'); }); });
+  on('#con-reject', 'click', () => { __ccb.pass('reject'); Promise.reject(new Error('CCB_TEST rejection')); });
+
+  // 7. Scrolling
+  on('#inner-scroll', 'scroll', (e) => { if (e.target.scrollTop > 0) __ccb.pass('inner-scroll', e.target.scrollTop); });
+  let scrollPassed = false;
+  window.addEventListener('scroll', () => {
+    if (!scrollPassed && scrollY > 100) { scrollPassed = true; __ccb.pass('page-scroll', Math.round(scrollY)); }
+    if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) __ccb.pass('bottom');
+  });
+
+  // 8. Navigation
+  window.addEventListener('hashchange', () => __ccb.pass('hash', location.hash));
+
+  // 10. Mock captcha
+  on('#btn-captcha-img', 'click', () => {
+    if ($('#mock-img-captcha')) return;
+    const w = document.createElement('div');
+    w.id = 'mock-img-captcha';
+    w.innerHTML = '<img id="captcha-image" alt="captcha" width="120" height="40" src="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%27120%27 height=%2740%27%3E%3Crect width=%27120%27 height=%2740%27 fill=%27%23ddd%27/%3E%3Ctext x=%2710%27 y=%2728%27 font-size=%2720%27%3EX7K2Q%3C/text%3E%3C/svg%3E">' +
+                  ' <input name="captcha_answer" placeholder="type the characters">';
+    $('#captcha-slot').appendChild(w);
+    __ccb.pass('captcha-img');
+  });
+  on('#btn-captcha', 'click', () => {
+    if ($('#mock-turnstile')) return;
+    const w = document.createElement('div');
+    w.id = 'mock-turnstile'; w.className = 'cf-turnstile mock-captcha';
+    w.innerHTML = '<input type="checkbox" id="captcha-check"> <label for="captcha-check">I am human (mock)</label>' +
+                  '<input type="hidden" name="cf-turnstile-response" value="">';
+    $('#captcha-slot').appendChild(w);
+    __ccb.pass('captcha-inserted');
+    w.querySelector('#captcha-check').addEventListener('change', (e) => {
+      if (!e.target.checked) return;
+      w.querySelector('[name=cf-turnstile-response]').value = 'mock-token-' + Date.now();
+      __ccb.pass('captcha-solved');
+    });
+  });
+})();
+</script>
+</body>
+</html>

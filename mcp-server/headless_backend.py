@@ -467,7 +467,7 @@ _DETECT_CAPTCHA_JS = r"""
   if (document.querySelector('.cf-turnstile, iframe[src*="challenges.cloudflare.com"], input[name="cf-turnstile-response"]'))
     widgets.push({type:'turnstile', solved: tokened('cf-turnstile-response')});
   if (widgets.length === 0 &&
-      document.querySelector('img[src*="captcha" i], input[name*="captcha" i], [id*="captcha" i], [class*="captcha" i]'))
+      document.querySelector('img[src*="captcha" i], img[alt*="captcha" i], img[id*="captcha" i], img[class*="captcha" i], canvas[id*="captcha" i], canvas[class*="captcha" i], input[name*="captcha" i]:not([type=hidden]):not([type=button]):not([type=submit]), input[id*="captcha" i]:not([type=hidden]):not([type=button]):not([type=submit]), :is([id*="captcha" i],[class*="captcha" i]) :is(img,canvas)'))
     widgets.push({type:'generic', solved: null});
   return {present: widgets.length > 0, widgets: widgets};
 })()
