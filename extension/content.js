@@ -80,9 +80,41 @@
   // DOM tool fails with "Receiving end does not exist".
   const interception = { fetch: false, xhr: false, console: false };
 
+  // In-flight request tracking for browser_wait_for_network_idle. Updated by
+  // every fetch/XHR hook (content world and page world) regardless of
+  // whether logging is enabled.
+  const netActivity = { pending: 0, lastActivity: Date.now() };
+  const netStart = () => { netActivity.pending++; netActivity.lastActivity = Date.now(); };
+  const netEnd = () => { netActivity.pending = Math.max(0, netActivity.pending - 1); netActivity.lastActivity = Date.now(); };
+
+  // Uncaught page errors and unhandled promise rejections. These never pass
+  // through console.*, so record them from the window events directly.
+  function pushConsoleEntry(level, message) {
+    consoleLogs.push({ level, timestamp: new Date().toISOString(), message, url: window.location.href });
+    if (consoleLogs.length > MAX_LOG_ENTRIES) consoleLogs.shift();
+  }
+  window.addEventListener('error', (e) => {
+    if (!loggingEnabled || !(e instanceof ErrorEvent)) return; // skip resource-load errors
+    try {
+      pushConsoleEntry('error', `Uncaught ${e.message}${e.filename ? ` (${e.filename}:${e.lineno}:${e.colno})` : ''}`);
+    } catch (err) { /* ignore */ }
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    if (!loggingEnabled) return;
+    let reason;
+    try {
+      const r = e.reason;
+      reason = r && typeof r === 'object' && 'message' in r ? `${r.name || 'Error'}: ${r.message}` : String(r);
+    } catch (err) {
+      reason = '[unreadable reason]';
+    }
+    pushConsoleEntry('error', `Unhandled promise rejection: ${reason}`);
+  });
+
   // Network request interceptor (fetch)
   const originalFetch = window.fetch;
   const fetchInterceptor = async function(...args) {
+    netStart();
     const startTime = Date.now();
     const [resource, init] = args;
     const url = typeof resource === 'string' ? resource : resource.url;
@@ -141,6 +173,8 @@
         }
       }
       throw error;
+    } finally {
+      netEnd();
     }
   };
 
@@ -167,6 +201,8 @@
   };
 
   const xhrSendInterceptor = function(body) {
+    netStart();
+    this.addEventListener('loadend', netEnd);
     if (loggingEnabled && this._logData) {
       const startTime = Date.now();
       this._logData.startTime = new Date().toISOString();
@@ -249,6 +285,8 @@
       const pageFetch = pageWin.fetch;
       exportFunction(function(...args) {
         const promise = callPage(pageFetch, pageWin, args);
+        netStart();
+        Promise.resolve(XPCNativeWrapper(promise)).then(netEnd, netEnd);
         if (!loggingEnabled) return promise;
         const [resource, init] = args;
         const startTime = Date.now();
@@ -303,6 +341,12 @@
         return callPage(pageOpen, this, args);
       }, proto, { defineAs: 'open' });
       exportFunction(function(body) {
+        try {
+          netStart();
+          this.addEventListener('loadend', netEnd);
+        } catch (e) {
+          logHookError('xhr.track', e);
+        }
         const entry = xhrData.get(this);
         if (loggingEnabled && entry) {
           try {
@@ -466,6 +510,37 @@
     };
   }
 
+  // Persistent MutationObserver whose records go into the console-log buffer
+  // (level "debug", prefixed "[dom]") so browser_get_console_logs returns
+  // them alongside page console output. Turns logging on if it was off.
+  let injectedObserver = null;
+  function injectObserver(options = {}) {
+    if (injectedObserver) injectedObserver.disconnect();
+    const target = document.querySelector(options.selector || 'body') || document.body;
+    const describe = (n) => n && n.nodeType === 1
+      ? n.tagName.toLowerCase() + (n.id ? '#' + n.id : '')
+      : (n ? n.nodeName : '?');
+    injectedObserver = new MutationObserver((mutations) => {
+      if (!loggingEnabled) return;
+      for (const m of mutations) {
+        let message = `[dom] ${m.type} on ${describe(m.target)}`;
+        if (m.type === 'attributes') message += ` attr=${m.attributeName}`;
+        if (m.type === 'childList') message += ` +${m.addedNodes.length} -${m.removedNodes.length}`;
+        if (m.type === 'characterData') message += ` text="${String(m.target.data).slice(0, 80)}"`;
+        consoleLogs.push({ level: 'debug', timestamp: new Date().toISOString(), message, url: window.location.href });
+        if (consoleLogs.length > MAX_LOG_ENTRIES) consoleLogs.shift();
+      }
+    });
+    injectedObserver.observe(target, {
+      attributes: options.observeAttributes !== false,
+      childList: options.observeChildList !== false,
+      subtree: options.observeSubtree !== false,
+      characterData: options.observeSubtree !== false,
+    });
+    loggingEnabled = true;
+    return { success: true, message: `Observer installed on ${describe(target)}; read with browser_get_console_logs (search "[dom]")` };
+  }
+
   function clearLogs(options = {}) {
     if (options.console !== false) {
       consoleLogs = [];
@@ -546,6 +621,8 @@
       // Console and network logging actions
       case "startLogging":
         return startLogging(message);
+      case "injectObserver":
+        return injectObserver(message);
       case "stopLogging":
         return stopLogging();
       case "getConsoleLogs":
@@ -670,7 +747,7 @@
     }
     // Generic image/text captcha (no reliable machine-readable completion)
     if (widgets.length === 0 &&
-        document.querySelector('img[src*="captcha" i], input[name*="captcha" i], [id*="captcha" i], [class*="captcha" i]')) {
+        document.querySelector('img[src*="captcha" i], img[alt*="captcha" i], img[id*="captcha" i], img[class*="captcha" i], canvas[id*="captcha" i], canvas[class*="captcha" i], input[name*="captcha" i]:not([type=hidden]):not([type=button]):not([type=submit]), input[id*="captcha" i]:not([type=hidden]):not([type=button]):not([type=submit]), :is([id*="captcha" i],[class*="captcha" i]) :is(img,canvas)')) {
       widgets.push({ type: 'generic', solved: null });
     }
 
@@ -808,9 +885,10 @@
       throw new Error(`Element not found with options: ${JSON.stringify(options)}`);
     }
 
-    // Scroll element into view
-    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    await sleep(100);
+    // Scroll element into view. Instant, not smooth: a smooth scroll is still
+    // moving when we read the rect, so clientX/Y would point at the wrong spot.
+    element.scrollIntoView({ behavior: 'instant', block: 'center' });
+    await sleep(50);
 
     // Get element position
     const rect = element.getBoundingClientRect();
@@ -863,12 +941,10 @@
       element.dispatchEvent(mouseDown);
       await sleep(50);
       element.dispatchEvent(mouseUp);
+      // A dispatched click event already runs the element's activation
+      // behaviour (toggles checkboxes/radios, submits forms, follows links),
+      // so calling element.click() as well would fire every handler twice.
       element.dispatchEvent(click);
-
-      // Also try native click for form elements
-      if (element.click) {
-        element.click();
-      }
     }
 
     return {
@@ -880,7 +956,11 @@
 
   // Type functionality
   async function performType(options) {
-    let element = findElement(options);
+    // `text` here is the string to type, not a text-content locator, so it
+    // must not reach findElement (which would search the page for it and
+    // shadow the id/name/placeholder locators).
+    const { text: _typed, ...locator } = options;
+    let element = findElement(locator);
 
     if (!element && options.focusFirst === false) {
       // Type into currently focused element
@@ -1286,75 +1366,24 @@
     });
   }
 
-  // Wait for network requests to settle (useful after AJAX calls)
+  // Wait for network requests to settle (useful after AJAX calls).
+  // Reads the shared in-flight counter maintained by the fetch/XHR hooks
+  // instead of re-patching window.fetch, which is read-only in Firefox's
+  // content-script sandbox and would not see page-world requests anyway.
   async function waitForNetworkIdle(options) {
     const timeout = options.timeout || 10000;
     const idleTime = options.idleTime || 500;
     const startTime = Date.now();
 
-    let lastActivityTime = Date.now();
-    let pendingRequests = 0;
-
-    // Hook into fetch
-    const originalFetch = window.fetch;
-    window.fetch = async (...args) => {
-      pendingRequests++;
-      lastActivityTime = Date.now();
-      try {
-        const result = await originalFetch(...args);
-        return result;
-      } finally {
-        pendingRequests--;
-        lastActivityTime = Date.now();
+    while (Date.now() - startTime < timeout) {
+      const idleDuration = Date.now() - netActivity.lastActivity;
+      if (netActivity.pending === 0 && idleDuration >= idleTime) {
+        return { idle: true, waitedMs: Date.now() - startTime, pendingRequests: 0 };
       }
-    };
-
-    // Hook into XMLHttpRequest
-    const originalOpen = XMLHttpRequest.prototype.open;
-    const originalSend = XMLHttpRequest.prototype.send;
-
-    XMLHttpRequest.prototype.open = function(...args) {
-      this._ccb_tracked = true;
-      return originalOpen.apply(this, args);
-    };
-
-    XMLHttpRequest.prototype.send = function(...args) {
-      if (this._ccb_tracked) {
-        pendingRequests++;
-        lastActivityTime = Date.now();
-        this.addEventListener('loadend', () => {
-          pendingRequests--;
-          lastActivityTime = Date.now();
-        });
-      }
-      return originalSend.apply(this, args);
-    };
-
-    try {
-      while (Date.now() - startTime < timeout) {
-        const idleDuration = Date.now() - lastActivityTime;
-        if (pendingRequests === 0 && idleDuration >= idleTime) {
-          return {
-            idle: true,
-            waitedMs: Date.now() - startTime,
-            pendingRequests: 0
-          };
-        }
-        await sleep(100);
-      }
-
-      return {
-        idle: false,
-        timedOut: true,
-        waitedMs: timeout,
-        pendingRequests
-      };
-    } finally {
-      // Restore original functions
-      window.fetch = originalFetch;
-      XMLHttpRequest.prototype.open = originalOpen;
-      XMLHttpRequest.prototype.send = originalSend;
+      await sleep(100);
     }
+
+    return { idle: false, timedOut: true, waitedMs: timeout, pendingRequests: netActivity.pending };
   }
 
   // Set up continuous observation of an element for changes

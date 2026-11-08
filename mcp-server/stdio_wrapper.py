@@ -99,6 +99,35 @@ def get_tools():
         log(f"Error fetching tools: {e}")
         return []
 
+# Tools that wait on a person, with their schema default wait (ms).
+_HUMAN_WAIT_DEFAULTS_MS = {
+    'browser_request_approval': 60000,
+    'browser_solve_captcha': 180000,
+}
+
+
+def _http_timeout(name, arguments):
+    """How long to wait for the HTTP server to answer this tool call.
+
+    A flat 30 s cut off human-in-the-loop tools (captcha solving defaults to
+    180 s) and any wait/poll tool given a long timeout, reporting "timed out"
+    while the browser was still waiting.
+    """
+    arguments = arguments or {}
+    if name == 'browser_run_workflow':
+        return 900
+    wait_ms = arguments.get('timeout') or arguments.get('timeout_ms') or 0
+    if name in _HUMAN_WAIT_DEFAULTS_MS:
+        if arguments.get('detect_only'):
+            return 30
+        wait_ms = wait_ms or _HUMAN_WAIT_DEFAULTS_MS[name]
+    try:
+        wait_s = float(wait_ms) / 1000.0
+    except (TypeError, ValueError):
+        wait_s = 0
+    return max(30.0, wait_s + 20.0)
+
+
 def call_tool(name, arguments):
     """Call a tool via the HTTP server."""
     try:
@@ -108,7 +137,7 @@ def call_tool(name, arguments):
             data=data,
             headers=_api_headers()
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=_http_timeout(name, arguments)) as resp:
             return json.loads(resp.read().decode('utf-8'))
     except Exception as e:
         log(f"Error calling tool {name}: {e}")

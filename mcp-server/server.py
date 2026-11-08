@@ -1128,12 +1128,17 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
         # Prompts that wait on a human (approval, captcha solving) can take far
         # longer than a normal command, so give the transport matching headroom.
+        # Honour a caller-supplied timeout (ms) so long waits aren't cut short.
+        try:
+            requested = float(arguments.get('timeout') or arguments.get('timeout_ms') or 0) / 1000.0
+        except (TypeError, ValueError):
+            requested = 0.0
         if action == 'requestApproval':
-            wait_timeout = 90.0
+            wait_timeout = max(90.0, requested + 10.0)
         elif action == 'solveCaptcha':
-            wait_timeout = 200.0
+            wait_timeout = max(200.0, requested + 10.0)
         else:
-            wait_timeout = 30.0
+            wait_timeout = max(30.0, requested + 10.0)
 
         # Check if we have a browser connection via WebSocket
         browser = connection_manager.get_active_browser()
@@ -1200,7 +1205,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 future = asyncio.run_coroutine_threadsafe(
                     headless.execute(action, tab_id, arguments), loop
                 )
-                result = future.result(timeout=35)
+                result = future.result(timeout=wait_timeout + 5)
                 guard.note_url(result)
                 return result
             except Exception as e:
@@ -1364,6 +1369,17 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
     if (el.getAttribute('placeholder')) return false;
     return true;
   }).slice(0, 30).map(el => (el.name || el.id || el.type || el.tagName).slice(0, 80));
+  // A placeholder is not an accessible label (it disappears on input and many
+  // screen readers skip it), so surface placeholder-only fields separately.
+  const placeholderOnly = inputs.filter(el =>
+    !(el.labels && el.labels.length) && !el.getAttribute('aria-label') &&
+    !el.getAttribute('aria-labelledby') && el.getAttribute('placeholder')
+  ).slice(0, 30).map(el => (el.name || el.id || el.getAttribute('placeholder')).slice(0, 80));
+  const headingSkips = [];
+  for (let i = 1; i < headings.length; i++) {
+    const prev = +headings[i - 1].level[1], cur = +headings[i].level[1];
+    if (cur > prev + 1) headingSkips.push(`${headings[i - 1].level} -> ${headings[i].level}: ${headings[i].text.slice(0, 60)}`);
+  }
   const emptyLinks = Array.from(document.querySelectorAll('a')).filter(a =>
     !(a.innerText || '').trim() && !a.getAttribute('aria-label') && !a.querySelector('img[alt]')
   ).length;
@@ -1386,6 +1402,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
     imagesMissingAlt: imagesMissingAlt,
     formInputCount: inputs.length,
     unlabeledInputs: unlabeled,
+    placeholderOnlyInputs: placeholderOnly,
+    headingLevelSkips: headingSkips,
     emptyLinks: emptyLinks,
     emptyButtons: emptyButtons,
     linkCount: document.querySelectorAll('a').length,
@@ -1429,6 +1447,13 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
             if not save_to_file:
                 return result
+
+            if not isinstance(data, str) or not data:
+                return {
+                    'success': False,
+                    'error': 'Browser returned no image data for the screenshot',
+                    'original_result': result
+                }
 
             # Handle base64 data URL
             if data.startswith('data:image'):
