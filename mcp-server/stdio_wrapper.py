@@ -17,6 +17,8 @@ import signal
 from pathlib import Path
 from typing import Optional
 
+from code_version import code_fingerprint, get_health, is_stale, stop_server
+
 # Configuration
 HTTP_HOST = os.environ.get('CLAUDE_BROWSER_HOST', '127.0.0.1')
 HTTP_PORT = int(os.environ.get('CLAUDE_BROWSER_HTTP_PORT', '8765'))
@@ -49,15 +51,18 @@ def start_http_server():
     """Start the HTTP server if not running."""
     global server_process
 
-    # Check if server is already running
-    try:
-        req = urllib.request.Request(f'{HTTP_URL}/health')
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            if resp.status == 200:
-                log("HTTP server already running")
-                return True
-    except:
-        pass
+    # Reuse a running server only if it runs the code currently on disk;
+    # otherwise replace it so edits to the repo take effect.
+    health = get_health(HTTP_URL)
+    if health:
+        if not is_stale(health):
+            log("HTTP server already running (code up to date)")
+            return True
+        log(f"Running HTTP server is stale (running {health.get('code_hash')}, "
+            f"on disk {code_fingerprint()}); restarting it")
+        if not stop_server(health, HTTP_HOST, HTTP_PORT):
+            log("Could not stop the stale server; using it as is")
+            return True
 
     # Start the server
     server_script = Path(__file__).parent / 'server.py'

@@ -4,6 +4,17 @@ All notable changes to ClaudeCodeBrowser are documented here. Versions follow
 [semantic versioning](https://semver.org/). The MCP server, extension, and
 docs are versioned together.
 
+## [Unreleased]
+
+### Changed
+- **Always run the current code.** The MCP server reports a hash of its source
+  in `/health`; `stdio_wrapper.py` and the native host replace a running
+  server whose code differs from the files on disk instead of reusing it.
+- **Installers run from the repo in place.** `install.sh` / `install.ps1` no
+  longer copy the native host, MCP server and agent into
+  `~/.claudecodebrowser` (and remove copies left by older installs); Firefox
+  and Claude Code launch them straight from the checkout.
+
 ## [1.4.0]
 
 ### Added

@@ -1,7 +1,7 @@
 # ClaudeCodeBrowser Installation Script for Windows
 #
-# Installs the native messaging host, MCP server, and browser agent, and
-# registers the native host with Firefox via the Windows registry.
+# Registers the native messaging host with Firefox (via the Windows registry)
+# so that it, the MCP server and the extension all run from this repo checkout.
 #
 # Run from PowerShell:
 #   powershell -ExecutionPolicy Bypass -File scripts\install.ps1
@@ -49,33 +49,36 @@ if ($Firefox) {
     Write-Host "[warn] Firefox not found - install it before using the extension" -ForegroundColor Yellow
 }
 
-# --- Copy files ---------------------------------------------------------
+# --- Runtime directories -----------------------------------------------
 
+# Code runs straight from this repo checkout (nothing is copied), so every
+# fix pulled or edited here is what Firefox and Claude Code run next time.
+# ~/.claudecodebrowser only holds runtime state: the native host manifest,
+# its .bat launcher, the API token, logs and screenshots.
 Write-Host ""
-Write-Host "Installing components to $InstallDir ..."
+Write-Host "Using code in place from $RepoRoot"
 
-foreach ($sub in @("native-host", "mcp-server", "agent", "screenshots", "logs")) {
+foreach ($sub in @("native-host", "screenshots", "logs")) {
     New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir $sub) | Out-Null
 }
-
-Copy-Item (Join-Path $RepoRoot "native-host\claudecodebrowser_host.py") (Join-Path $InstallDir "native-host\")
-foreach ($f in @("server.py", "safety.py", "headless_backend.py", "stdio_wrapper.py", "mcp_config.json")) {
-    Copy-Item (Join-Path $RepoRoot "mcp-server\$f") (Join-Path $InstallDir "mcp-server\")
+# Remove copies left by older versions of this script, which would otherwise
+# run a stale snapshot instead of the repo.
+foreach ($stale in @("mcp-server", "agent", "native-host\claudecodebrowser_host.py")) {
+    $p = Join-Path $InstallDir $stale
+    if (Test-Path $p) { Remove-Item -Recurse -Force $p; Write-Host "[ok] Removed old copy: $p" }
 }
-Copy-Item (Join-Path $RepoRoot "agent\browser_agent.py") (Join-Path $InstallDir "agent\")
-Write-Host "[ok] Components installed"
 
 # --- Native messaging host wrapper --------------------------------------
 
 # Firefox on Windows can only launch .exe/.bat native hosts, not .py files,
 # so generate a .bat wrapper with the absolute Python path baked in.
 $HostBat = Join-Path $InstallDir "native-host\run_host.bat"
-$HostPy = Join-Path $InstallDir "native-host\claudecodebrowser_host.py"
+$HostPy = Join-Path $RepoRoot "native-host\claudecodebrowser_host.py"
 @"
 @echo off
 "$Python" "$HostPy" %*
 "@ | Set-Content -Path $HostBat -Encoding ASCII
-Write-Host "[ok] Native host wrapper created: $HostBat"
+Write-Host "[ok] Native host wrapper created: $HostBat -> $HostPy"
 
 # --- Native messaging manifest + registry key ---------------------------
 
@@ -111,7 +114,10 @@ Write-Host "=============================================================="
 Write-Host "Claude Code MCP Configuration:"
 Write-Host "=============================================================="
 Write-Host ""
-Write-Host "  claude mcp add claudecodebrowser -- `"$Python`" `"$InstallDir\mcp-server\stdio_wrapper.py`""
+Write-Host "  claude mcp add claudecodebrowser -- `"$Python`" `"$RepoRoot\mcp-server\stdio_wrapper.py`""
+Write-Host ""
+Write-Host "  (or set CLAUDECODEBROWSER_DIR=$RepoRoot and CLAUDECODEBROWSER_PYTHON=$Python"
+Write-Host "   to use the repo's .mcp.json)"
 Write-Host ""
 Write-Host "+--------------------------------------------------------------+"
 Write-Host "|       Installation complete!                                 |"

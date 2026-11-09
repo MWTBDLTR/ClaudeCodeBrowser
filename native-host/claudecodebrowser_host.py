@@ -249,18 +249,7 @@ def start_mcp_server():
         logger.error(f"Max restart attempts ({MAX_RESTART_ATTEMPTS}) reached. Manual intervention required.")
         return False
 
-    # Find server script - check multiple locations
-    possible_paths = [
-        Path(__file__).parent.parent / 'mcp-server' / 'server.py',
-        Path.home() / '.claudecodebrowser' / 'mcp-server' / 'server.py',
-    ]
-
-    mcp_server_path = None
-    for path in possible_paths:
-        if path.exists():
-            mcp_server_path = path
-            break
-
+    mcp_server_path = find_server_script()
     if not mcp_server_path:
         logger.error(f"MCP server script not found in any location")
         return False
@@ -326,8 +315,43 @@ def is_port_in_use():
         return False
 
 
+def find_server_script():
+    """Locate server.py, preferring the copy next to this host (the repo checkout)."""
+    possible_paths = [
+        Path(__file__).resolve().parent.parent / 'mcp-server' / 'server.py',
+        Path.home() / '.claudecodebrowser' / 'mcp-server' / 'server.py',
+    ]
+    for path in possible_paths:
+        if path.exists():
+            return path
+    return None
+
+
+def replace_if_stale():
+    """If the running server's code differs from server.py on disk, stop it.
+
+    Returns True if a stale server was stopped (so a fresh one should start).
+    """
+    script = find_server_script()
+    if not script:
+        return False
+    try:
+        sys.path.insert(0, str(script.parent))
+        from code_version import code_fingerprint, get_health, is_stale, stop_server
+    except ImportError:
+        return False
+    health = get_health(MCP_SERVER_URL)
+    if not health or not is_stale(health, script.parent):
+        return False
+    logger.info(f"MCP server is stale (running {health.get('code_hash')}, on disk "
+                f"{code_fingerprint(script.parent)} at {script.parent}); restarting it")
+    return stop_server(health, MCP_SERVER_HOST, MCP_SERVER_PORT)
+
+
 def ensure_mcp_server():
-    """Ensure MCP server is running, start it if not."""
+    """Ensure MCP server is running the current code, start it if not."""
+    replace_if_stale()
+
     # Check if server is running and responding
     if check_mcp_server():
         logger.info("MCP server already running and responding")

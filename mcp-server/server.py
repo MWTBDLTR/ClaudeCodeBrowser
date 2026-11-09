@@ -77,6 +77,11 @@ MAIN_EVENT_LOOP: Optional[asyncio.AbstractEventLoop] = None
 HEADLESS_STARTUP_TIMEOUT = float(os.environ.get('CLAUDE_BROWSER_HEADLESS_STARTUP_TIMEOUT', '45'))
 
 from safety import get_safety_guard
+from code_version import code_fingerprint
+
+# Hash of the source this process was started from. Launchers compare it with
+# the files on disk and replace this server when they differ (stale code).
+CODE_HASH = code_fingerprint()
 
 # API token for localhost HTTP authentication
 _TOKEN_FILE = Path.home() / '.claudecodebrowser' / 'api_token'
@@ -916,6 +921,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 'status': 'ok',
                 'timestamp': datetime.now().isoformat(),
                 'version': '1.4.0',
+                'code_hash': CODE_HASH,
+                'pid': os.getpid(),
                 'browsers_connected': len(connection_manager.browser_connections)
             })
 

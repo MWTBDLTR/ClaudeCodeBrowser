@@ -55,38 +55,29 @@ else
     echo -e "${YELLOW}⚠ Firefox not found${NC}"
 fi
 
-# Create installation directory
-echo -e "\n${YELLOW}Creating installation directory...${NC}"
-mkdir -p "$INSTALL_DIR"/{native-host,mcp-server,agent,screenshots,logs}
-echo -e "${GREEN}✓ Created $INSTALL_DIR${NC}"
+# Runtime directory. Code runs straight from this repo checkout (nothing is
+# copied), so every fix pulled or edited here is what Firefox and Claude Code
+# run next time. ~/.claudecodebrowser only holds runtime state: launcher,
+# API token, logs and screenshots.
+echo -e "\n${YELLOW}Using code in place from $SCRIPT_DIR${NC}"
+mkdir -p "$INSTALL_DIR"/{native-host,screenshots,logs}
+chmod +x "$SCRIPT_DIR/native-host/claudecodebrowser_host.py" \
+         "$SCRIPT_DIR/mcp-server/server.py" "$SCRIPT_DIR/agent/browser_agent.py"
 
-# Copy files
-echo -e "\n${YELLOW}Installing components...${NC}"
-
-# Copy native host
-cp "$SCRIPT_DIR/native-host/claudecodebrowser_host.py" "$INSTALL_DIR/native-host/"
-chmod +x "$INSTALL_DIR/native-host/claudecodebrowser_host.py"
-echo -e "${GREEN}✓ Native messaging host installed${NC}"
-
-# Copy MCP server
-cp "$SCRIPT_DIR/mcp-server/server.py" "$INSTALL_DIR/mcp-server/"
-cp "$SCRIPT_DIR/mcp-server/safety.py" "$INSTALL_DIR/mcp-server/"
-cp "$SCRIPT_DIR/mcp-server/headless_backend.py" "$INSTALL_DIR/mcp-server/"
-cp "$SCRIPT_DIR/mcp-server/stdio_wrapper.py" "$INSTALL_DIR/mcp-server/"
-cp "$SCRIPT_DIR/mcp-server/mcp_config.json" "$INSTALL_DIR/mcp-server/"
-chmod +x "$INSTALL_DIR/mcp-server/server.py"
-echo -e "${GREEN}✓ MCP server installed${NC}"
-
-# Copy agent
-cp "$SCRIPT_DIR/agent/browser_agent.py" "$INSTALL_DIR/agent/"
-chmod +x "$INSTALL_DIR/agent/browser_agent.py"
-echo -e "${GREEN}✓ Browser agent installed${NC}"
+# Remove copies left by older versions of this script, which would otherwise
+# run a stale snapshot instead of the repo.
+for stale in mcp-server agent native-host/claudecodebrowser_host.py; do
+    if [ -e "$INSTALL_DIR/$stale" ]; then
+        rm -rf "$INSTALL_DIR/$stale"
+        echo -e "${GREEN}✓ Removed old copy: $INSTALL_DIR/$stale${NC}"
+    fi
+done
 
 # Install native messaging manifest for Firefox
 echo -e "\n${YELLOW}Installing Firefox native messaging manifest...${NC}"
 mkdir -p "$FIREFOX_NATIVE_MANIFESTS_DIR"
 
-NATIVE_HOST_PATH="$INSTALL_DIR/native-host/claudecodebrowser_host.py"
+NATIVE_HOST_PATH="$SCRIPT_DIR/native-host/claudecodebrowser_host.py"
 if [ "$OS" = "Darwin" ]; then
     # Firefox on macOS launches native hosts with a minimal PATH (launchd's),
     # so "#!/usr/bin/env python3" may not resolve (e.g. Homebrew installs).
@@ -94,7 +85,7 @@ if [ "$OS" = "Darwin" ]; then
     PYTHON_BIN="$(command -v python3)"
     cat > "$INSTALL_DIR/native-host/run_host.sh" << WRAPEOF
 #!/bin/bash
-exec "$PYTHON_BIN" "$INSTALL_DIR/native-host/claudecodebrowser_host.py"
+exec "$PYTHON_BIN" "$SCRIPT_DIR/native-host/claudecodebrowser_host.py"
 WRAPEOF
     chmod +x "$INSTALL_DIR/native-host/run_host.sh"
     NATIVE_HOST_PATH="$INSTALL_DIR/native-host/run_host.sh"
@@ -117,17 +108,17 @@ echo -e "${GREEN}✓ Firefox native messaging manifest installed${NC}"
 echo -e "\n${YELLOW}Creating convenience scripts...${NC}"
 
 # Start server script
-cat > "$INSTALL_DIR/start-server.sh" << 'EOF'
+cat > "$INSTALL_DIR/start-server.sh" << EOF
 #!/bin/bash
-cd "$(dirname "$0")/mcp-server"
-python3 server.py
+cd "$SCRIPT_DIR/mcp-server"
+exec python3 server.py
 EOF
 chmod +x "$INSTALL_DIR/start-server.sh"
 
 # Agent script
 cat > "$INSTALL_DIR/browser-agent" << EOF
 #!/bin/bash
-python3 "$INSTALL_DIR/agent/browser_agent.py" "\$@"
+python3 "$SCRIPT_DIR/agent/browser_agent.py" "\$@"
 EOF
 chmod +x "$INSTALL_DIR/browser-agent"
 
@@ -183,7 +174,7 @@ echo '{
   "mcpServers": {
     "claudecodebrowser": {
       "command": "python3",
-      "args": ["'$INSTALL_DIR'/mcp-server/stdio_wrapper.py"]
+      "args": ["'$SCRIPT_DIR'/mcp-server/stdio_wrapper.py"]
     }
   }
 }'
