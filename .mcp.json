@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "claudecodebrowser": {
-      "command": "python3",
-      "args": ["/home/dre/.claudecodebrowser/mcp-server/stdio_wrapper.py"],
+      "command": "/usr/bin/python3",
+      "args": ["/Users/hh/GitHub/ClaudeCodeBrowser/mcp-server/stdio_wrapper.py"],
       "env": {}
     }
   }
